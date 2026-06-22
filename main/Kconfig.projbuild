@@ -1,0 +1,253 @@
+menu "Vandal Test Configuration"
+
+    menu "Election Configuration"
+        config VANDAL_ELECTION_TIMEOUT_MS
+            int "Election timeout (ms)"
+            default 2000
+            range 500 10000
+            help
+                Time to wait for other boards before declaring self as master.
+                Lower values boot faster for single-board tests; higher values
+                are more reliable for simultaneous boot scenarios.
+    endmenu
+
+    menu "UART Configuration"
+        config VANDAL_UART_MASTER_TX_PIN
+            int "Master UART TX GPIO"
+            default 16
+            help
+                GPIO used as UART TX on the master board (default D6 = GPIO16).
+
+        config VANDAL_UART_MASTER_RX_PIN
+            int "Master UART RX GPIO"
+            default 17
+            help
+                GPIO used as UART RX on the master board (default D7 = GPIO17).
+
+        config VANDAL_UART_SLAVE_TX_PIN
+            int "Slave UART TX GPIO"
+            default 17
+            help
+                GPIO used as UART TX on the slave board.
+                When stacked, slave TX must map to the physical pin connected to master RX.
+                Default: GPIO17 (same physical pin as master RX).
+
+        config VANDAL_UART_SLAVE_RX_PIN
+            int "Slave UART RX GPIO"
+            default 16
+            help
+                GPIO used as UART RX on the slave board.
+                When stacked, slave RX must map to the physical pin connected to master TX.
+                Default: GPIO16 (same physical pin as master TX).
+
+        config VANDAL_UART_BAUD_RATE
+            int "UART baud rate"
+            default 115200
+    endmenu
+
+    menu "I2C Configuration"
+        config VANDAL_I2C_SDA_PIN
+            int "I2C SDA GPIO"
+            default 22
+            help
+                GPIO used for I2C SDA (default D4 = GPIO22). Same on both boards.
+
+        config VANDAL_I2C_SCL_PIN
+            int "I2C SCL GPIO"
+            default 23
+            help
+                GPIO used for I2C SCL (default D5 = GPIO23). Same on both boards.
+
+        config VANDAL_I2C_SLAVE_ADDR
+            hex "I2C slave address"
+            default 0x28
+            help
+                7-bit I2C address used by the slave device.
+
+        config VANDAL_I2C_FREQ_HZ
+            int "I2C clock frequency (Hz)"
+            default 100000
+    endmenu
+
+    menu "SPI Configuration"
+        config VANDAL_SPI_MASTER_MOSI_PIN
+            int "Master SPI MOSI GPIO"
+            default 18
+            help
+                GPIO for SPI MOSI on master (default D10 = GPIO18).
+
+        config VANDAL_SPI_MASTER_MISO_PIN
+            int "Master SPI MISO GPIO"
+            default 20
+            help
+                GPIO for SPI MISO on master (default D9 = GPIO20).
+
+        config VANDAL_SPI_MASTER_SCLK_PIN
+            int "Master SPI SCLK GPIO"
+            default 19
+            help
+                GPIO for SPI SCLK on master (default D8 = GPIO19).
+
+        config VANDAL_SPI_MASTER_CS_PIN
+            int "Master SPI CS GPIO"
+            default 21
+            help
+                GPIO for SPI CS on master (default D3 = GPIO21).
+
+        config VANDAL_SPI_SLAVE_MOSI_PIN
+            int "Slave SPI MOSI GPIO"
+            default 18
+            help
+                GPIO for SPI MOSI on slave. When stacked this is the same physical
+                line as master MOSI so the slave sees incoming data here.
+
+        config VANDAL_SPI_SLAVE_MISO_PIN
+            int "Slave SPI MISO GPIO"
+            default 20
+            help
+                GPIO for SPI MISO on slave. When stacked this is the same physical
+                line as master MISO so the slave sends data here.
+
+        config VANDAL_SPI_SLAVE_SCLK_PIN
+            int "Slave SPI SCLK GPIO"
+            default 19
+            help
+                GPIO for SPI SCLK on slave (same physical line as master SCLK).
+
+        config VANDAL_SPI_SLAVE_CS_PIN
+            int "Slave SPI CS GPIO"
+            default 21
+            help
+                GPIO for SPI CS on slave (same physical line as master CS).
+
+        config VANDAL_SPI_CLOCK_SPEED_HZ
+            int "SPI clock speed (Hz)"
+            default 1000000
+    endmenu
+
+    menu "ESP-NOW Configuration"
+        config VANDAL_ESPNOW_CHANNEL
+            int "ESP-NOW WiFi channel"
+            default 1
+            range 1 13
+            help
+                WiFi channel used for ESP-NOW communication.
+
+        config VANDAL_ESPNOW_PMK
+            string "ESP-NOW primary master key"
+            default "VandalPMK12345!"
+            help
+                16-character primary master key for ESP-NOW encryption.
+    endmenu
+
+    menu "BLE Configuration"
+        config VANDAL_BLE_OPEN_SERVICE_UUID
+            string "BLE open service UUID (128-bit)"
+            default "0000aa00-0000-1000-8000-00805f9b34fb"
+            help
+                UUID for the open (no auth) BLE GATT service.
+
+        config VANDAL_BLE_AUTH_SERVICE_UUID
+            string "BLE authenticated service UUID (128-bit)"
+            default "0000bb00-0000-1000-8000-00805f9b34fb"
+            help
+                UUID for the authenticated BLE GATT service (requires PIN).
+
+        config VANDAL_BLE_PIN
+            int "BLE pairing PIN code"
+            default 1234
+            range 0 999999
+            help
+                Numeric PIN used for BLE authenticated service pairing.
+
+        config VANDAL_BLE_DEVICE_NAME
+            string "BLE device name"
+            default "Vandal-CTF"
+    endmenu
+
+    menu "WiFi AP Configuration"
+        config VANDAL_WIFI_AP_SSID
+            string "WiFi AP SSID"
+            default "Vandal CTF"
+
+        config VANDAL_WIFI_AP_PASSWORD
+            string "WiFi AP password"
+            default "VandalCTFPlatform"
+            help
+                Password for the AP (WPA/WPA2/WPA3: 8-63 ASCII characters).
+                Ignored when auth mode is OPEN.
+
+        choice VANDAL_WIFI_AP_AUTH
+            prompt "WiFi AP authentication mode"
+            default VANDAL_WIFI_AP_AUTH_OPEN
+            help
+                Select the authentication mode for the master's SoftAP.
+                The slave will use the same credentials to connect.
+                Note: WEP is not supported for SoftAP in ESP-IDF v5.5+.
+
+            config VANDAL_WIFI_AP_AUTH_OPEN
+                bool "Open (no authentication)"
+
+            config VANDAL_WIFI_AP_AUTH_WPA_PSK
+                bool "WPA-PSK"
+
+            config VANDAL_WIFI_AP_AUTH_WPA2_PSK
+                bool "WPA2-PSK"
+
+            config VANDAL_WIFI_AP_AUTH_WPA_WPA2_PSK
+                bool "WPA/WPA2-PSK"
+
+            config VANDAL_WIFI_AP_AUTH_WPA3_PSK
+                bool "WPA3-PSK"
+
+            config VANDAL_WIFI_AP_AUTH_WPA2_WPA3_PSK
+                bool "WPA2/WPA3-PSK"
+        endchoice
+
+        config VANDAL_WIFI_AP_CHANNEL
+            int "WiFi AP channel"
+            default 1
+            range 1 13
+            help
+                Must match VANDAL_ESPNOW_CHANNEL for coexistence.
+
+        config VANDAL_WIFI_AP_MAX_CONN
+            int "WiFi AP max connections"
+            default 4
+    endmenu
+
+    menu "HTTP Configuration"
+        config VANDAL_HTTP_PORT
+            int "HTTP server port"
+            default 80
+            help
+                TCP port for the HTTP server on the master.
+
+        config VANDAL_HTTP_MASTER_IP
+            string "Master AP IP address"
+            default "192.168.4.1"
+            help
+                IP address of the master's SoftAP (used by slave to POST reports).
+
+        config VANDAL_HTTP_POST_INTERVAL_MS
+            int "Slave HTTP POST interval (ms)"
+            default 5000
+            help
+                How often the slave sends a JSON status report to the master.
+    endmenu
+
+    menu "General Configuration"
+        config VANDAL_PAYLOAD_SEND_INTERVAL_MS
+            int "Master payload send interval (ms)"
+            default 3000
+            help
+                Interval in milliseconds between master payload transmissions.
+
+        config VANDAL_LED_PIN
+            int "User LED GPIO"
+            default 15
+            help
+                GPIO for the on-board user LED (default GPIO15).
+    endmenu
+
+endmenu
