@@ -278,13 +278,20 @@ static int cli_write_cb(uint16_t conn_handle,
 
     if (proto == VANDAL_PROTO_BLE_OPEN)
     {
-        if (s_auth_val_handle != 0)
+        if (vandal_proto_is_running(VANDAL_PROTO_BLE_AUTH))
         {
-            cli_write_auth();
+            if (s_auth_val_handle != 0)
+            {
+                cli_write_auth();
+            }
+            else
+            {
+                cli_start_auth_discovery();
+            }
         }
         else
         {
-            cli_start_auth_discovery();
+            s_cycle_busy = false;
         }
     }
     else
@@ -307,7 +314,14 @@ static int cli_disc_open_chr_cb(uint16_t conn_handle,
     {
         if (s_open_val_handle != 0)
         {
-            cli_write_open();
+            if (vandal_proto_is_running(VANDAL_PROTO_BLE_OPEN))
+            {
+                cli_write_open();
+            }
+            else
+            {
+                cli_start_auth_discovery();
+            }
         }
         else
         {
@@ -336,7 +350,14 @@ static int cli_disc_auth_chr_cb(uint16_t conn_handle,
     {
         if (s_auth_val_handle != 0)
         {
-            cli_write_auth();
+            if (vandal_proto_is_running(VANDAL_PROTO_BLE_AUTH))
+            {
+                cli_write_auth();
+            }
+            else
+            {
+                s_cycle_busy = false;
+            }
         }
         else
         {
@@ -621,16 +642,28 @@ static void ble_slave_task(void *arg)
             }
         }
 
+        bool open_active = vandal_proto_is_running(VANDAL_PROTO_BLE_OPEN);
+        bool auth_active = vandal_proto_is_running(VANDAL_PROTO_BLE_AUTH);
+        if (!open_active && !auth_active)
+            continue;
+
         s_cycle_busy = true;
         s_cycle_start_tick = xTaskGetTickCount();
 
-        if (s_open_val_handle != 0)
+        if (open_active)
         {
-            cli_write_open();
+            if (s_open_val_handle != 0)
+                cli_write_open();
+            else
+                cli_start_open_discovery();
         }
         else
         {
-            cli_start_open_discovery();
+            /* Only AUTH active */
+            if (s_auth_val_handle != 0)
+                cli_write_auth();
+            else
+                cli_start_auth_discovery();
         }
     }
 }
@@ -720,12 +753,12 @@ void vandal_ble_init(void)
 
     if (vandal_is_master())
     {
-        /* Master: register GATT services (will advertise once on_sync fires) */
+        /* Master: register GATT services (will advertise once on_sync fires).
+         * The GATT server is always-on; "running" flags stay false until the
+         * user explicitly starts a service via the web UI. */
         ble_svc_gap_device_name_set(CONFIG_VANDAL_BLE_DEVICE_NAME);
         ble_gatts_count_cfg(s_gatt_svcs);
         ble_gatts_add_svcs(s_gatt_svcs);
-        vandal_proto_set_running(VANDAL_PROTO_BLE_OPEN, true);
-        vandal_proto_set_running(VANDAL_PROTO_BLE_AUTH, true);
         ESP_LOGI(TAG, "GATT server initialized; advertising open+auth services (PIN=%06d)",
                  CONFIG_VANDAL_BLE_PIN);
     }

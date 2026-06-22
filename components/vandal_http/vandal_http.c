@@ -59,6 +59,9 @@ static char s_last_report[1024] = "{}";
 static char s_master_payloads[VANDAL_PROTO_MAX][128];
 static bool s_master_received[VANDAL_PROTO_MAX];
 
+/* Commands for slave: which protocols it should actively send payloads */
+static bool s_slave_cmd[VANDAL_PROTO_MAX] = {false};
+
 static void master_payload_event_handler(void *handler_arg,
                                          esp_event_base_t base,
                                          int32_t id,
@@ -419,6 +422,51 @@ static esp_err_t http_payload_recv_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── GET /slave-cmd handler ──────────────────────────────────────────────── */
+/* Returns which protocols the slave should currently be transmitting.        */
+
+static esp_err_t slave_cmd_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    for (int i = 0; i < VANDAL_PROTO_MAX; i++)
+    {
+        cJSON_AddBoolToObject(root, vandal_proto_name((vandal_proto_t)i), s_slave_cmd[i]);
+    }
+
+    /* Include current custom payloads so slave uses the master-configured value */
+    static const vandal_proto_t slave_driven[] = {
+        VANDAL_PROTO_BLE_OPEN,
+        VANDAL_PROTO_BLE_AUTH,
+        VANDAL_PROTO_HTTP,
+    };
+    cJSON *payloads = cJSON_AddObjectToObject(root, "payloads");
+    if (payloads)
+    {
+        for (int i = 0; i < (int)(sizeof(slave_driven) / sizeof(slave_driven[0])); i++)
+        {
+            const char *key = vandal_proto_name(slave_driven[i]);
+            const char *cp  = vandal_proto_get_custom_payload(slave_driven[i]);
+            if (cp)
+                cJSON_AddStringToObject(payloads, key, cp);
+            else
+                cJSON_AddNullToObject(payloads, key);
+        }
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, json ? json : "{}");
+    free(json);
+    return ESP_OK;
+}
+
 /* ── Protocol start/stop dispatch ────────────────────────────────────────── */
 
 static void dispatch_start(vandal_proto_t proto)
@@ -438,18 +486,19 @@ static void dispatch_start(vandal_proto_t proto)
         vandal_espnow_start();
         break;
     case VANDAL_PROTO_BLE_OPEN:
-        vandal_ble_start();
+        s_slave_cmd[VANDAL_PROTO_BLE_OPEN] = true;
         vandal_proto_set_running(VANDAL_PROTO_BLE_OPEN, true);
         break;
     case VANDAL_PROTO_BLE_AUTH:
-        vandal_ble_start();
+        s_slave_cmd[VANDAL_PROTO_BLE_AUTH] = true;
         vandal_proto_set_running(VANDAL_PROTO_BLE_AUTH, true);
         break;
     case VANDAL_PROTO_THREAD:
         vandal_thread_start();
         break;
     case VANDAL_PROTO_HTTP:
-        http_payload_start();
+        s_slave_cmd[VANDAL_PROTO_HTTP] = true;
+        vandal_proto_set_running(VANDAL_PROTO_HTTP, true);
         break;
     default:
         break;
@@ -473,16 +522,19 @@ static void dispatch_stop(vandal_proto_t proto)
         vandal_espnow_stop();
         break;
     case VANDAL_PROTO_BLE_OPEN:
+        s_slave_cmd[VANDAL_PROTO_BLE_OPEN] = false;
         vandal_proto_set_running(VANDAL_PROTO_BLE_OPEN, false);
         break;
     case VANDAL_PROTO_BLE_AUTH:
+        s_slave_cmd[VANDAL_PROTO_BLE_AUTH] = false;
         vandal_proto_set_running(VANDAL_PROTO_BLE_AUTH, false);
         break;
     case VANDAL_PROTO_THREAD:
         vandal_thread_stop();
         break;
     case VANDAL_PROTO_HTTP:
-        http_payload_stop();
+        s_slave_cmd[VANDAL_PROTO_HTTP] = false;
+        vandal_proto_set_running(VANDAL_PROTO_HTTP, false);
         break;
     default:
         break;
@@ -748,7 +800,7 @@ static void start_server(void)
     config.server_port = CONFIG_VANDAL_HTTP_PORT;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 8192;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 18;
 
     if (httpd_start(&s_server, &config) != ESP_OK)
     {
@@ -821,6 +873,20 @@ static void start_server(void)
         .handler = cors_options_handler,
     };
     httpd_register_uri_handler(s_server, &cors_http_payload);
+
+    const httpd_uri_t slave_cmd_uri = {
+        .uri = "/slave-cmd",
+        .method = HTTP_GET,
+        .handler = slave_cmd_get_handler,
+    };
+    httpd_register_uri_handler(s_server, &slave_cmd_uri);
+
+    const httpd_uri_t cors_slave_cmd = {
+        .uri = "/slave-cmd",
+        .method = HTTP_OPTIONS,
+        .handler = cors_options_handler,
+    };
+    httpd_register_uri_handler(s_server, &cors_slave_cmd);
 
     const httpd_uri_t static_uri = {
         .uri = "/*",
@@ -946,6 +1012,83 @@ static void http_client_task(void *arg)
     }
 }
 
+/* ── Slave command polling task ───────────────────────────────────────────── */
+/* Polls GET /slave-cmd on master every 2 s and updates local running flags.  */
+
+static void slave_cmd_poll_task(void *arg)
+{
+    /* Wait for WiFi STA to connect and get an IP */
+    vTaskDelay(pdMS_TO_TICKS(5000));
+
+    char url[96];
+    snprintf(url, sizeof(url), "http://" CONFIG_VANDAL_HTTP_MASTER_IP ":%d/slave-cmd",
+             CONFIG_VANDAL_HTTP_PORT);
+
+    while (1)
+    {
+        char buf[512] = {0};
+        esp_http_client_config_t cfg = {
+            .url = url,
+            .method = HTTP_METHOD_GET,
+            .timeout_ms = 3000,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (client)
+        {
+            if (esp_http_client_open(client, 0) == ESP_OK)
+            {
+                int content_len = esp_http_client_fetch_headers(client);
+                int to_read = (content_len > 0 && content_len < (int)sizeof(buf) - 1)
+                              ? content_len : (int)sizeof(buf) - 1;
+                int n = esp_http_client_read(client, buf, to_read);
+                if (n > 0)
+                    buf[n] = '\0';
+                esp_http_client_close(client);
+            }
+            esp_http_client_cleanup(client);
+        }
+
+        cJSON *root = cJSON_Parse(buf);
+        if (root)
+        {
+            /* Slave-driven protocols — update running state and custom payload */
+            const vandal_proto_t slave_driven[] = {
+                VANDAL_PROTO_BLE_OPEN,
+                VANDAL_PROTO_BLE_AUTH,
+                VANDAL_PROTO_HTTP,
+            };
+            for (int i = 0; i < (int)(sizeof(slave_driven) / sizeof(slave_driven[0])); i++)
+            {
+                const char *key = vandal_proto_name(slave_driven[i]);
+                cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+                if (cJSON_IsBool(item))
+                {
+                    vandal_proto_set_running(slave_driven[i], cJSON_IsTrue(item));
+                }
+            }
+
+            /* Apply custom payloads pushed by master via /payload */
+            cJSON *payloads_obj = cJSON_GetObjectItemCaseSensitive(root, "payloads");
+            if (cJSON_IsObject(payloads_obj))
+            {
+                for (int i = 0; i < (int)(sizeof(slave_driven) / sizeof(slave_driven[0])); i++)
+                {
+                    const char *key = vandal_proto_name(slave_driven[i]);
+                    cJSON *p = cJSON_GetObjectItemCaseSensitive(payloads_obj, key);
+                    if (cJSON_IsString(p) && p->valuestring && p->valuestring[0] != '\0')
+                        vandal_proto_set_custom_payload(slave_driven[i], p->valuestring);
+                    else
+                        vandal_proto_set_custom_payload(slave_driven[i], NULL);
+                }
+            }
+
+            cJSON_Delete(root);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
 static void start_client(void)
 {
     /* Register our own event handler to collect payloads */
@@ -954,9 +1097,8 @@ static void start_client(void)
         http_event_handler, NULL));
 
     xTaskCreate(http_client_task, "http_client", 8192, NULL, 3, NULL);
-
-    /* Start sending HTTP payloads to master's /http-payload endpoint */
-    http_payload_start();
+    xTaskCreate(slave_cmd_poll_task, "slave_cmd_poll", 4096, NULL, 3, NULL);
+    xTaskCreate(http_payload_sender_task, "http_payload", 4096, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "HTTP client initialized (POST to %s:%d every %d ms)",
              CONFIG_VANDAL_HTTP_MASTER_IP, CONFIG_VANDAL_HTTP_PORT,
